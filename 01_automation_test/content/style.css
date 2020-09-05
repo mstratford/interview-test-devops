@@ -1,0 +1,12 @@
+body {
+  background: #111;
+  color: white;
+  font-family: sans-serif;
+}
+#container {
+  margin: 15vh auto;
+  text-align: center;
+}
+#logo {
+  width: 300px;
+}
