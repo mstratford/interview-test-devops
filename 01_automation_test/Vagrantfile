@@ -1,0 +1,25 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure("2") do |config|
+
+  ## This ubuntu box was chosen since it includes virtualbox virtual additions, used for the synced folder below.
+  config.vm.box = "taqtiqa/ubuntu-18.04"
+
+  # Create a forwarded port network for 8080. This passes the docker container out to the host machine
+  # via 127.0.0.1 (localhost) to disable public access
+
+  config.vm.network "forwarded_port", guest: 8080, host: 8080, host_ip: "127.0.0.1"
+
+  # Map the current directory (including dockerfiles and web server content) to the virtual machine.
+  config.vm.synced_folder ".", "/home/vagrant/files"
+
+  # Use docker inside the VM to build an image from the dockerfile and port forward out the nginx service.
+  config.vm.provision "docker" do |d|
+    d.build_image "-t webserver files/"
+    d.run "webserver",
+      args: "-it -d -p 8080:80 --name web",
+      auto_assign_name: false
+  end
+
+end
