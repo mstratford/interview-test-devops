@@ -20,11 +20,14 @@ variable "location" {
 variable "admin_username" {
     type = string
     description = "Administrator user name for virtual machine"
+    default = "demouser"
 }
 
 variable "admin_password" {
     type = string
     description = "Password must meet Azure complexity requirements"
+    default = "demopass123#"
+
 }
 
 resource "azurerm_resource_group" "rg" {
@@ -49,8 +52,15 @@ resource "azurerm_subnet" "subnet" {
 }
 
 # Create public IP
-resource "azurerm_public_ip" "publicip" {
-  name                = "demo_public_ip"
+resource "azurerm_public_ip" "ip1" {
+  name                = "demo_public_ip1"
+  location            = var.location
+  resource_group_name = azurerm_resource_group.rg.name
+  allocation_method   = "Static"
+}
+# Create public IP
+resource "azurerm_public_ip" "ip2" {
+  name                = "demo_public_ip2"
   location            = var.location
   resource_group_name = azurerm_resource_group.rg.name
   allocation_method   = "Static"
@@ -85,32 +95,37 @@ resource "azurerm_network_security_group" "nsg" {
     source_address_prefix      = "*"
     destination_address_prefix = "*"
   }
+
 }
+
+# VM1 - Proxy webhost
 
 # Create network interface
 resource "azurerm_network_interface" "nic" {
-  name                      = "vm_nic"
+  name                      = "vm1_nic"
   location                  = var.location
   resource_group_name       = azurerm_resource_group.rg.name
 
   ip_configuration {
     name                          = "vm_nic_conf"
     subnet_id                     = azurerm_subnet.subnet.id
-    private_ip_address_allocation = "dynamic"
-    public_ip_address_id          = azurerm_public_ip.publicip.id
+    private_ip_address_allocation = "static"
+    private_ip_address            = "10.0.1.10"
+    public_ip_address_id          = azurerm_public_ip.ip1.id
   }
 }
 
 # Create a Linux virtual machine
 resource "azurerm_virtual_machine" "vm" {
-  name                  = "vm"
+  name                  = "vm1"
   location              = var.location
   resource_group_name   = azurerm_resource_group.rg.name
   network_interface_ids = [azurerm_network_interface.nic.id]
   vm_size               = "Standard_DS1_v2"
+  delete_os_disk_on_termination = true
 
   storage_os_disk {
-    name              = "myOsDisk"
+    name              = "vm1Disk"
     caching           = "ReadWrite"
     create_option     = "FromImage"
     managed_disk_type = "Premium_LRS"
@@ -134,8 +149,133 @@ resource "azurerm_virtual_machine" "vm" {
   }
 }
 
-data "azurerm_public_ip" "ip" {
-  name                = azurerm_public_ip.publicip.name
+data "azurerm_public_ip" "ip1" {
+  name                = azurerm_public_ip.ip1.name
   resource_group_name = azurerm_virtual_machine.vm.resource_group_name
   depends_on          = [azurerm_virtual_machine.vm]
+}
+
+# VM2 - Backend Private Web Host
+# Create network interface
+resource "azurerm_network_interface" "nic2" {
+  name                      = "vm2_nic"
+  location                  = var.location
+  resource_group_name       = azurerm_resource_group.rg.name
+
+  ip_configuration {
+    name                          = "vm_nic_conf"
+    subnet_id                     = azurerm_subnet.subnet.id
+    private_ip_address_allocation = "Static"
+    private_ip_address            = "10.0.1.11"
+    public_ip_address_id          = azurerm_public_ip.ip2.id
+  }
+}
+
+# Create a Linux virtual machine
+resource "azurerm_virtual_machine" "vm2" {
+  name                  = "vm2"
+  location              = var.location
+  resource_group_name   = azurerm_resource_group.rg.name
+  network_interface_ids = [azurerm_network_interface.nic2.id]
+  vm_size               = "Standard_DS1_v2"
+  delete_os_disk_on_termination = true
+
+  storage_os_disk {
+    name              = "vm2Disk"
+    caching           = "ReadWrite"
+    create_option     = "FromImage"
+    managed_disk_type = "Premium_LRS"
+  }
+
+  storage_image_reference {
+    publisher = "Canonical"
+    offer     = "UbuntuServer"
+    sku       = "18.04-LTS"
+    version   = "latest"
+  }
+
+  os_profile {
+    computer_name  = "vm2"
+    admin_username = var.admin_username
+    admin_password = var.admin_password
+  }
+
+  os_profile_linux_config {
+    disable_password_authentication = false
+  }
+
+
+
+}
+
+resource "null_resource" "install-vm" {
+  # Changes to any instance of the cluster requires re-provisioning
+  triggers = {
+    ids = "data.azurerm_public_ip.ip1.ip_address"
+  }
+
+  # Copies the myapp.conf file to /etc/myapp.conf
+  provisioner "file" {
+    source      = "nginx-config"
+    destination = "/tmp/nginx-config"
+
+    connection {
+      user     = var.admin_username
+      password = var.admin_password
+      host = data.azurerm_public_ip.ip1.ip_address # <-- note here we're using the Data Source rather than the Resource for a Public IP
+    }
+  }
+
+  provisioner "local-exec" {
+    command = "echo VM1 IP: ${data.azurerm_public_ip.ip1.ip_address} >> public_ips.txt"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "echo ${var.admin_password} | sudo -S apt update",
+      "sudo apt install -y nginx",
+      "sudo mv /tmp/nginx-config /etc/nginx/sites-enabled/default",
+      "sudo service nginx restart"
+    ]
+    connection {
+      user     = var.admin_username
+      password = var.admin_password
+      host = data.azurerm_public_ip.ip1.ip_address # <-- note here we're using the Data Source rather than the Resource for a Public IP
+    }
+  }
+}
+
+
+resource "null_resource" "install-vm2" {
+  # Changes to any instance of the cluster requires re-provisioning
+  triggers = {
+    ids = "data.azurerm_public_ip.ip2.ip_address"
+  }
+
+  provisioner "local-exec" {
+    command = "echo VM2 IP: ${data.azurerm_public_ip.ip2.ip_address} >> public_ips.txt"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "echo ${var.admin_password} | sudo -S apt update",
+      "sudo apt install -y python3 python3-venv git make gunicorn",
+      "git clone https://github.com/mstratford/Artistics.git",
+      "cd Artistics",
+      "make install",
+      "nohup ./run.sh &",
+      "sleep 1"
+    ]
+    connection {
+      user     = var.admin_username
+      password = var.admin_password
+      host = data.azurerm_public_ip.ip2.ip_address # <-- note here we're using the Data Source rather than the Resource for a Public IP
+    }
+  }
+}
+
+data "azurerm_public_ip" "ip2" {
+  name                = azurerm_public_ip.ip2.name
+  resource_group_name = azurerm_virtual_machine.vm2.resource_group_name
+  depends_on          = [azurerm_virtual_machine.vm2]
 }
