@@ -1,2 +1,8 @@
 
 01_automation_test/.vagrant/
+
+03_infrastructure_test/*.tfstate*
+
+03_infrastructure_test/public_ips.txt
+
+03_infrastructure_test/.terraform

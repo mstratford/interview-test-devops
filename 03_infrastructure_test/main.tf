@@ -12,6 +12,7 @@ provider "azurerm" {
   features {}
 }
 
+# We want to use UK South zone for Azure.
 variable "location" {
   type = string
   default = "uksouth"
@@ -30,12 +31,13 @@ variable "admin_password" {
 
 }
 
+# All of the resources we manage are in this resource group.
 resource "azurerm_resource_group" "rg" {
   name     = "demo_resource_group"
   location = var.location
 }
 
-# Create a virtual network
+# Create a virtual network for our VMs.
 resource "azurerm_virtual_network" "vnet" {
     name                = "demo_vnet"
     address_space       = ["10.0.0.0/16"]
@@ -51,14 +53,14 @@ resource "azurerm_subnet" "subnet" {
   address_prefixes     = ["10.0.1.0/24"]
 }
 
-# Create public IP
+# Create public IP for our first VM.
 resource "azurerm_public_ip" "ip1" {
   name                = "demo_public_ip1"
   location            = var.location
   resource_group_name = azurerm_resource_group.rg.name
   allocation_method   = "Static"
 }
-# Create public IP
+# Create public IP for our second VM.
 resource "azurerm_public_ip" "ip2" {
   name                = "demo_public_ip2"
   location            = var.location
@@ -67,36 +69,6 @@ resource "azurerm_public_ip" "ip2" {
 }
 
 
-# Create Network Security Group and rule
-resource "azurerm_network_security_group" "nsg" {
-  name                = "demo_sec_group"
-  location            = var.location
-  resource_group_name = azurerm_resource_group.rg.name
-
-  security_rule {
-    name                       = "SSH"
-    priority                   = 1001
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    source_port_range          = "*"
-    destination_port_range     = "22"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
-  }
-  security_rule {
-    name                       = "HTTP"
-    priority                   = 1000
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    source_port_range          = "*"
-    destination_port_range     = "80"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
-  }
-
-}
 
 # VM1 - Proxy webhost
 
@@ -149,13 +121,57 @@ resource "azurerm_virtual_machine" "vm" {
   }
 }
 
+# Hold the public IP of VM1 as it gets set after creation. Used for the install-vm resource.
 data "azurerm_public_ip" "ip1" {
   name                = azurerm_public_ip.ip1.name
   resource_group_name = azurerm_virtual_machine.vm.resource_group_name
   depends_on          = [azurerm_virtual_machine.vm]
 }
 
+# Install procedure for VM1, null resource required because Azure doesn't confirm public IP before completing.
+resource "null_resource" "install-vm" {
+  # Changes to any instance of the cluster requires re-provisioning
+  triggers = {
+    ids = "data.azurerm_public_ip.ip1.ip_address"
+  }
+
+  # Copies the myapp.conf file to /etc/myapp.conf
+  provisioner "file" {
+    source      = "nginx-config"
+    destination = "/tmp/nginx-config"
+
+    connection {
+      user     = var.admin_username
+      password = var.admin_password
+      host = data.azurerm_public_ip.ip1.ip_address # <-- note here we're using the Data Source rather than the Resource for a Public IP
+    }
+  }
+
+  provisioner "local-exec" {
+    command = "echo VM1 IP: ${data.azurerm_public_ip.ip1.ip_address} >> public_ips.txt"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "echo ${var.admin_password} | sudo -S apt update",
+      "sudo apt install -y nginx",
+      "sudo mv /tmp/nginx-config /etc/nginx/sites-enabled/default",
+      "sudo service nginx restart"
+    ]
+    connection {
+      user     = var.admin_username
+      password = var.admin_password
+      host = data.azurerm_public_ip.ip1.ip_address # <-- note here we're using the Data Source rather than the Resource for a Public IP
+    }
+  }
+}
+
+
+
+
 # VM2 - Backend Private Web Host
+
+
 # Create network interface
 resource "azurerm_network_interface" "nic2" {
   name                      = "vm2_nic"
@@ -204,48 +220,16 @@ resource "azurerm_virtual_machine" "vm2" {
     disable_password_authentication = false
   }
 
-
-
 }
 
-resource "null_resource" "install-vm" {
-  # Changes to any instance of the cluster requires re-provisioning
-  triggers = {
-    ids = "data.azurerm_public_ip.ip1.ip_address"
-  }
-
-  # Copies the myapp.conf file to /etc/myapp.conf
-  provisioner "file" {
-    source      = "nginx-config"
-    destination = "/tmp/nginx-config"
-
-    connection {
-      user     = var.admin_username
-      password = var.admin_password
-      host = data.azurerm_public_ip.ip1.ip_address # <-- note here we're using the Data Source rather than the Resource for a Public IP
-    }
-  }
-
-  provisioner "local-exec" {
-    command = "echo VM1 IP: ${data.azurerm_public_ip.ip1.ip_address} >> public_ips.txt"
-  }
-
-  provisioner "remote-exec" {
-    inline = [
-      "echo ${var.admin_password} | sudo -S apt update",
-      "sudo apt install -y nginx",
-      "sudo mv /tmp/nginx-config /etc/nginx/sites-enabled/default",
-      "sudo service nginx restart"
-    ]
-    connection {
-      user     = var.admin_username
-      password = var.admin_password
-      host = data.azurerm_public_ip.ip1.ip_address # <-- note here we're using the Data Source rather than the Resource for a Public IP
-    }
-  }
+# Hold the public IP of VM1 as it gets set after creation. Used for the install-vm resource.
+data "azurerm_public_ip" "ip2" {
+  name                = azurerm_public_ip.ip2.name
+  resource_group_name = azurerm_virtual_machine.vm2.resource_group_name
+  depends_on          = [azurerm_virtual_machine.vm2]
 }
 
-
+# Install procedure for VM2, null resource required because Azure doesn't confirm public IP before completing.
 resource "null_resource" "install-vm2" {
   # Changes to any instance of the cluster requires re-provisioning
   triggers = {
@@ -272,10 +256,4 @@ resource "null_resource" "install-vm2" {
       host = data.azurerm_public_ip.ip2.ip_address # <-- note here we're using the Data Source rather than the Resource for a Public IP
     }
   }
-}
-
-data "azurerm_public_ip" "ip2" {
-  name                = azurerm_public_ip.ip2.name
-  resource_group_name = azurerm_virtual_machine.vm2.resource_group_name
-  depends_on          = [azurerm_virtual_machine.vm2]
 }
